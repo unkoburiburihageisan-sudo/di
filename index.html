@@ -1,0 +1,79 @@
+// --- 1. データベース定義 (Prisma Schema) ---
+// これを schema.prisma に貼り付けて npx prisma db push します
+/*
+model Server {
+  id         String   @id @default(uuid())
+  name       String
+  inviteCode String   @unique // 招待コード
+  members    Member[]
+}
+
+model Member {
+  id       String @id @default(uuid())
+  userId   String // Auth(Clerk等)のID
+  serverId String
+  server   Server @relation(fields: [serverId], references: [id])
+  messages Message[]
+}
+
+model Message {
+  id           String   @id @default(uuid())
+  content      String   @db.Text
+  memberId     String
+  member       Member   @relation(fields: [memberId], references: [id])
+  mentionIds   String[] // メンションされたユーザーIDのリスト
+  createdAt    DateTime @default(now())
+}
+*/
+
+// --- 2. サーバー作成 & 招待リンク生成ロジック ---
+import { v4 as uuidv4 } from "uuid";
+
+export const createServer = async (name: string, userId: string) => {
+  return await db.server.create({
+    data: {
+      name,
+      inviteCode: uuidv4(), // サーバー作成時に自動で招待コードを発行
+      members: {
+        create: [{ userId, role: "ADMIN" }] // 作成者を管理者として追加
+      }
+    }
+  });
+};
+
+// --- 3. 招待リンクからの参加 & 自動リダイレクト ---
+// GET /invite/[inviteCode]
+export const handleInvite = async (inviteCode: string, currentUserId: string) => {
+  // すで参加しているか確認
+  const existingServer = await db.server.findFirst({
+    where: { inviteCode, members: { some: { userId: currentUserId } } }
+  });
+
+  if (existingServer) return `/servers/${existingServer.id}`;
+
+  // 参加していなければメンバー追加
+  const server = await db.server.update({
+    where: { inviteCode },
+    data: { members: { create: [{ userId: currentUserId }] } }
+  });
+
+  return `/servers/${server.id}`;
+};
+
+// --- 4. メンション検知 & メッセージ送信ロジック ---
+export const sendMessage = async (content: string, memberId: string) => {
+  // @ユーザー名 を正規表現で抽出 (例: @john -> john)
+  const mentionRegex = /@(\w+)/g;
+  const mentions = content.match(mentionRegex) || [];
+  
+  // 実際にはDBからユーザーIDを引く処理が必要ですが、ここでは簡易化
+  const mentionIds = mentions.map(m => m.replace("@", ""));
+
+  return await db.message.create({
+    data: {
+      content,
+      memberId,
+      mentionIds, // ここにメンションされたIDを保存
+    }
+  });
+};
